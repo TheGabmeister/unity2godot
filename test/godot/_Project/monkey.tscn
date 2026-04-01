@@ -1,8 +1,11 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="PackedScene" path="res://_Project/monkey.fbx" id="1"]
+
+[ext_resource type="Material" path="res://_Project/monkey.tres" id="2"]
 
 [node name="monkey" type="Node3D"]
 
 [node name="monkey" parent="." instance=ExtResource("1")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.17881, 0, -1.21419)
+surface_material_override/0 = ExtResource("2")
