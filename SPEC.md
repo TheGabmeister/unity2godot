@@ -204,6 +204,22 @@ No FBX parsing is performed by the converter. The GUID table (built from `.meta`
 
 When a Unity scene instances a mesh from an FBX file, the Godot scene will use `instance = ExtResource(...)` to load the entire FBX as a sub-scene at the correct transform. Individual mesh selection within the FBX is not performed — the whole model is instanced.
 
+### Multiple Sub-Object References
+
+Unity references individual meshes inside an FBX via `{fileID, guid}` where the fileID identifies a specific sub-object (e.g., "Wall", "Roof", "Door" within `building.fbx`). There are two usage patterns:
+
+1. **FBX placed via PrefabInstance** (most common) — the scene has a `PrefabInstance` component pointing to the FBX. Handled by prefab conversion — the whole model is instanced, which is correct.
+
+2. **Individual meshes placed directly** (uncommon) — the scene has bare `MeshFilter` + `MeshRenderer` GameObjects, each referencing a different sub-mesh from the same FBX. Instancing the whole FBX at each location produces visual duplicates.
+
+**V1 behavior:**
+
+- During scene conversion, track all `(guid, fileID)` pairs that reference FBX files
+- **Single unique fileID per FBX** (or single-mesh FBX): instance the whole FBX normally. This covers the vast majority of cases.
+- **Multiple different fileIDs from the same FBX**: instance the whole FBX at each location anyway, but log a **prominent warning** listing the FBX file and which sub-objects were referenced, so the user knows to fix it manually in Godot.
+
+Referencing individual meshes inside a Godot-imported FBX requires knowing the internal node paths that Godot creates during import, which is not possible without running Godot's importer first.
+
 ---
 
 ## 6. Material Conversion
