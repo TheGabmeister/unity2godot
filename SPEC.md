@@ -4,7 +4,7 @@
 
 A cross-platform desktop tool that converts a `.unitypackage` file into a ready-to-open Godot 4.6.1 project. V1 is limited to static meshes (FBX), textures, materials (URP + legacy), and scenes. No C# scripts, custom shaders, skinned meshes, animations, or audio.
 
-**Target Godot version:** 4.6.1 (uses ufbx 0.20.0 internally for FBX import)
+**Target Godot version:** 4.6.1
 
 ---
 
@@ -20,7 +20,6 @@ A cross-platform desktop tool that converts a `.unitypackage` file into a ready-
 
 | Library | Purpose |
 |---|---|
-| **ufbx 0.20.0** | Parse FBX files to extract sub-object names for reference resolution |
 | **Dear ImGui** | GUI framework (immediate mode) |
 | **GLFW** | Windowing/input backend for ImGui |
 | **OpenGL3** | Rendering backend for ImGui (system-provided) |
@@ -231,15 +230,9 @@ flags/srgb=true
 
 ### Approach: Keep FBX, Let Godot Import
 
-FBX files are **copied directly** to the Godot project, preserving the original Unity folder structure (minus the `Assets/` prefix). Godot 4.6.1 natively imports FBX using its bundled ufbx.
+FBX files are **copied directly** to the Godot project, preserving the original Unity folder structure (minus the `Assets/` prefix). Godot 4.6.1 natively imports FBX files.
 
-### Why ufbx Is Still Needed in the Converter
-
-Even though we don't convert FBX→glTF, we use **ufbx** in the converter to:
-
-1. **Validate** that FBX files are readable and not corrupt
-2. **Extract sub-object names** (mesh names, node names) to help resolve Unity's fileID references when building scene node paths
-3. **Read FBX metadata** (units, coordinate system) if needed for .import hints
+No FBX parsing is performed by the converter. The GUID table (built from `.meta` files) provides the file path for each FBX asset, and the converter only needs to copy the file and reference it in scenes.
 
 ### Scene References to FBX
 
@@ -628,7 +621,6 @@ unity2godot/
 │       ├── log.h/.cpp              # Logging system (INFO/WARN/ERROR)
 │       └── types.h                 # Common types, AssetEntry, etc.
 └── thirdparty/
-    ├── ufbx/                       # FBX parser (already present)
     ├── imgui/                      # Dear ImGui
     ├── glfw/                       # GLFW windowing
     ├── miniz/                      # gzip/deflate
