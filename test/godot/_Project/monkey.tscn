@@ -7,4 +7,6 @@
 [node name="monkey" type="Node3D"]
 
 [node name="monkey" parent="." instance=ExtResource("1")]
+
+[node name="Suzanne" parent="monkey"]
 surface_material_override/0 = ExtResource("2")

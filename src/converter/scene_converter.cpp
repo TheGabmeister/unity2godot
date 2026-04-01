@@ -469,11 +469,26 @@ std::shared_ptr<GodotNode> convertPrefabInstance(SceneContext& ctx,
 
     node->name = sanitizeName(instanceName);
 
+    // FBX prefab instances need material overrides on the imported mesh node,
+    // not on the PackedScene root (which is usually just a Node3D wrapper).
+    bool sourcePrefabIsFbx = false;
+    std::vector<std::string> sourcePrefabMeshNodeNames;
+    if (auto guidIt = ctx.guids->find(prefabGuid);
+        guidIt != ctx.guids->end() && guidIt->second.type == AssetType::FBX) {
+        sourcePrefabIsFbx = true;
+        std::string diskPath = fbxDiskPath(prefabGuid, *ctx.guids, ctx.outputDir);
+        if (!diskPath.empty() && fs::exists(diskPath)) {
+            sourcePrefabMeshNodeNames = extractFbxMeshNodeNames(diskPath);
+        }
+    }
+
     // Process m_Modifications to extract transform and material overrides.
     Vec3 pos{0, 0, 0};
     Quat rot{0, 0, 0, 1};
     Vec3 scl{1, 1, 1};
     bool hasPos = false, hasRot = false, hasScl = false;
+    bool warnedAboutRootMaterialFallback = false;
+    bool warnedAboutMultiMeshMaterialFallback = false;
 
     auto& mods = modification["m_Modifications"];
     if (mods.isSeq()) {
@@ -511,10 +526,34 @@ std::shared_ptr<GodotNode> convertPrefabInstance(SceneContext& ctx,
                         if (bracket != std::string::npos && bracket2 != std::string::npos) {
                             std::string idxStr = propPath.substr(bracket + 1, bracket2 - bracket - 1);
                             std::string matResId = addExtResource(ctx.extResources, "Material", matIt->second);
-                            node->properties.push_back({
-                                "surface_material_override/" + idxStr,
-                                "ExtResource(\"" + matResId + "\")"
-                            });
+                            if (sourcePrefabIsFbx && !sourcePrefabMeshNodeNames.empty()) {
+                                if (sourcePrefabMeshNodeNames.size() > 1 && !warnedAboutMultiMeshMaterialFallback) {
+                                    ctx.log->warn(
+                                        "PrefabInstance material override for FBX '" + instanceName +
+                                        "' targets a multi-mesh import. Using the first mesh node '" +
+                                        sanitizeName(sourcePrefabMeshNodeNames[0]) +
+                                        "' because FBX fileID-to-node resolution is not implemented yet."
+                                    );
+                                    warnedAboutMultiMeshMaterialFallback = true;
+                                }
+                                node->childOverrides.push_back({
+                                    sanitizeName(sourcePrefabMeshNodeNames[0]),
+                                    "surface_material_override/" + idxStr,
+                                    "ExtResource(\"" + matResId + "\")"
+                                });
+                            } else {
+                                if (sourcePrefabIsFbx && !warnedAboutRootMaterialFallback) {
+                                    ctx.log->warn(
+                                        "PrefabInstance material override for FBX '" + instanceName +
+                                        "' could not resolve a mesh child name. Applying the override to the instance root instead."
+                                    );
+                                    warnedAboutRootMaterialFallback = true;
+                                }
+                                node->properties.push_back({
+                                    "surface_material_override/" + idxStr,
+                                    "ExtResource(\"" + matResId + "\")"
+                                });
+                            }
                         }
                     }
                 }
