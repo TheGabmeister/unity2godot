@@ -20,6 +20,7 @@ A cross-platform desktop tool that converts a `.unitypackage` file into a ready-
 
 | Library | Purpose |
 |---|---|
+| **ufbx** | Parse FBX files to extract node/mesh names for material override paths and fileID resolution |
 | **Dear ImGui** | GUI framework (immediate mode) |
 | **GLFW** | Windowing/input backend for ImGui |
 | **OpenGL3** | Rendering backend for ImGui (system-provided) |
@@ -204,11 +205,36 @@ No `.import` files are generated. Godot auto-generates these on first project op
 
 FBX files are **copied directly** to the Godot project, preserving the original Unity folder structure (minus the `Assets/` prefix). Godot 4.6.1 natively imports FBX files.
 
-No FBX parsing is performed by the converter. The GUID table (built from `.meta` files) provides the file path for each FBX asset, and the converter only needs to copy the file and reference it in scenes.
+### ufbx Usage
+
+The converter uses **ufbx** to parse each FBX file during conversion for:
+
+1. **Node/mesh name extraction** — read the names of all nodes and meshes inside the FBX, used to construct material override paths in `.tscn` files
+2. **fileID resolution** — map Unity's deterministic fileID hashes to specific mesh/node names within the FBX
+3. **Validation** — detect corrupt or unreadable FBX files early, before Godot attempts to import them
+
+Since Godot 4.6.1 also uses ufbx internally for FBX import, the node names extracted by our converter should match the names Godot creates during import in most cases (see limitations).
 
 ### Scene References to FBX
 
 When a Unity scene instances a mesh from an FBX file, the Godot scene will use `instance = ExtResource(...)` to load the entire FBX as a sub-scene at the correct transform. Individual mesh selection within the FBX is not performed — the whole model is instanced.
+
+### Material Overrides on FBX Instances
+
+When a Unity MeshRenderer assigns materials to a mesh from an FBX, the converter applies those materials as overrides on the instanced FBX's child nodes:
+
+1. Use ufbx to read the FBX and extract node/mesh names
+2. Map the Unity MeshRenderer's target to the corresponding node name in the FBX
+3. Write child node overrides in the `.tscn` using that name as the path:
+
+```ini
+[node name="Building" parent="." instance=ExtResource("1")]
+
+[node name="Wall" parent="Building"]
+surface_material_override/0 = ExtResource("2")
+```
+
+This works when Godot's import produces the same node names as ufbx reports (~80-90% of cases). It can fail if Godot renames nodes (e.g., duplicate name suffixes, sanitization) or creates a different hierarchy structure. Failed overrides are logged as warnings.
 
 ### Multiple Sub-Object References
 
@@ -220,11 +246,9 @@ Unity references individual meshes inside an FBX via `{fileID, guid}` where the 
 
 **V1 behavior:**
 
-- During scene conversion, track all `(guid, fileID)` pairs that reference FBX files
+- During scene conversion, track all `(guid, fileID)` pairs that reference FBX files. Use ufbx to resolve fileIDs to human-readable mesh names.
 - **Single unique fileID per FBX** (or single-mesh FBX): instance the whole FBX normally. This covers the vast majority of cases.
-- **Multiple different fileIDs from the same FBX**: instance the whole FBX at each location anyway, but log a **prominent warning** listing the FBX file and which sub-objects were referenced, so the user knows to fix it manually in Godot.
-
-Referencing individual meshes inside a Godot-imported FBX requires knowing the internal node paths that Godot creates during import, which is not possible without running Godot's importer first.
+- **Multiple different fileIDs from the same FBX**: instance the whole FBX at each location anyway, but log a **prominent warning** listing the FBX file and which sub-objects were referenced by name, so the user knows to fix it manually in Godot.
 
 ---
 
@@ -642,6 +666,7 @@ unity2godot/
 │       ├── log.h/.cpp              # Logging system (INFO/WARN/ERROR)
 │       └── types.h                 # Common types, AssetEntry, etc.
 └── thirdparty/
+    ├── ufbx/                       # FBX parser
     ├── imgui/                      # Dear ImGui
     ├── glfw/                       # GLFW windowing
     ├── miniz/                      # gzip/deflate
@@ -679,7 +704,7 @@ The following are explicitly **not supported** in V1 and will be logged in the s
 
 1. **FBX instancing granularity:** Since we instance entire FBX files rather than individual meshes, a Unity scene that uses 3 different meshes from the same FBX will create 3 instances of the full model. This may produce visual duplicates if the FBX contains multiple objects. Mitigation: log a warning when this is detected.
 
-2. **Material overrides on FBX instances:** When Godot instances an FBX, the internal node structure depends on Godot's import. Material overrides on instanced FBX sub-meshes may not map correctly if Godot names the mesh nodes differently than Unity. Mitigation: best-effort path matching, warning on failure.
+2. **Material overrides on FBX instances:** The converter uses ufbx to extract node names from FBX files and constructs override paths assuming Godot's importer produces matching names. This works in ~80-90% of cases since Godot also uses ufbx internally. It can fail if Godot renames nodes (duplicate suffixes, sanitization) or restructures the hierarchy. Mitigation: best-effort path matching, warning on failure. Failed overrides result in the FBX's embedded materials being used instead.
 
 3. **Unity YAML edge cases:** Stripped/binary scenes won't parse. The converter requires text-mode `.unity` files (which is what `.unitypackage` always contains). Multi-scene setups (additive loading) are converted as independent scenes.
 

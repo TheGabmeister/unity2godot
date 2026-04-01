@@ -11,6 +11,10 @@ set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(thirdparty/glfw)
 
+# --- ufbx (single-file C library) ---
+add_library(ufbx STATIC thirdparty/ufbx/ufbx.c)
+target_include_directories(ufbx PUBLIC thirdparty/ufbx)
+
 # --- miniz ---
 add_subdirectory(thirdparty/miniz)
 
@@ -37,7 +41,7 @@ target_link_libraries(imgui PUBLIC glfw)
 
 # --- Main executable ---
 add_executable(unity2godot src/main.cpp)
-target_link_libraries(unity2godot PRIVATE imgui miniz nfd)
+target_link_libraries(unity2godot PRIVATE imgui ufbx miniz nfd)
 
 # OpenGL
 if(WIN32)
