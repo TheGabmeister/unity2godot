@@ -23,11 +23,8 @@ A cross-platform desktop tool that converts a `.unitypackage` file into a ready-
 | **Dear ImGui** | GUI framework (immediate mode) |
 | **GLFW** | Windowing/input backend for ImGui |
 | **OpenGL3** | Rendering backend for ImGui (system-provided) |
-| **nativefiledialog-extended** or **tinyfiledialogs** | Native OS file/folder picker dialogs |
+| **nativefiledialog-extended** | Native OS file/folder picker dialogs |
 | **miniz** | gzip/deflate decompression for .unitypackage |
-| **microtar** (or similar) | Tar archive reading |
-| **stb_image** | Load PSD/TGA/EXR textures for transcoding |
-| **stb_image_write** | Write PNG files for texture transcoding |
 
 ---
 
@@ -91,7 +88,7 @@ A cross-platform desktop tool that converts a `.unitypackage` file into a ready-
 ### Extraction Process
 
 1. Decompress gzip layer using **miniz**
-2. Read tar entries using **microtar**
+2. Read tar entries using a **custom tar reader** (~100 lines; tar is a trivial format of 512-byte header blocks followed by raw data)
 3. Extract all entries to a **temporary directory**
 4. Build GUID → path mapping table by reading every `pathname` file
 5. Parse every `asset.meta` file to extract:
@@ -189,9 +186,8 @@ The parser needs to handle:
 
 ### Copy & Transcode
 
-1. **Supported by Godot natively:** PNG, JPG, WebP, BMP → **copy as-is**
-2. **Not supported / limited:** PSD, TGA, EXR → **transcode to PNG** using stb_image + stb_image_write
-3. Update all material references to point to the transcoded `.png` filename
+1. **Supported by Godot natively:** PNG, JPG, WebP, BMP, TGA → **copy as-is**
+2. **Not supported:** PSD, EXR → **copy as-is with a warning** that Godot cannot import these formats. User must convert manually. Transcoding support planned for a future version.
 
 ### Import Settings (Unity .meta → Godot .import)
 
@@ -499,7 +495,7 @@ renderer/rendering_method="forward_plus"
 ### Framework
 
 - **Dear ImGui** with **GLFW + OpenGL3** backend
-- Native file/folder dialogs via **nativefiledialog-extended** or **tinyfiledialogs**
+- Native file/folder dialogs via **nativefiledialog-extended**
 
 ### Layout: Single-Screen Wizard
 
@@ -606,7 +602,7 @@ unity2godot/
 │   │   └── converter_ui.h/.cpp     # Converter UI layout and state
 │   ├── converter/
 │   │   ├── converter.h/.cpp        # Main conversion orchestrator
-│   │   ├── package_extractor.h/.cpp # .unitypackage tar.gz extraction
+│   │   ├── package_extractor.h/.cpp # .unitypackage tar.gz extraction (miniz + custom tar reader)
 │   │   ├── guid_table.h/.cpp       # GUID → path resolution table
 │   │   ├── unity_yaml_parser.h/.cpp # Custom Unity YAML parser
 │   │   ├── texture_converter.h/.cpp # Texture copy/transcode + .import generation
@@ -624,8 +620,6 @@ unity2godot/
     ├── imgui/                      # Dear ImGui
     ├── glfw/                       # GLFW windowing
     ├── miniz/                      # gzip/deflate
-    ├── microtar/                   # Tar reading
-    ├── stb/                        # stb_image + stb_image_write
     └── nfd/                        # nativefiledialog-extended
 ```
 
@@ -668,12 +662,13 @@ The following are explicitly **not supported** in V1 and will be logged in the s
 
 5. **Light intensity:** Unity and Godot use different light intensity units. Unity URP uses physical units (lumens/lux) while Godot uses an arbitrary energy multiplier. Direct value copy may produce too-bright or too-dim lighting. Mitigation: copy value as-is, document that manual adjustment may be needed.
 
-6. **Texture transcoding quality:** PSD files with layers are flattened to the composite image via stb_image. Layer information is lost. EXR HDR data is tone-mapped to 8-bit PNG (lossy).
+6. **Unsupported texture formats:** PSD and EXR files are copied as-is but Godot cannot import them. The user must manually convert these to PNG/JPG. Automatic transcoding is planned for a future version.
 
 ---
 
 ## 15. Future Versions (Not In Scope — Reference Only)
 
+- V1.x: Texture transcoding (PSD/EXR → PNG) via stb_image
 - V2: Skinned meshes, animations, blend shapes
 - V3: Audio import, particle system basic conversion
 - V4: C# → GDScript transpilation (limited subset)
