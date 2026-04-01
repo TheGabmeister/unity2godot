@@ -692,8 +692,12 @@ void writeNodeRecursive(std::ostringstream& out,
     out << "\n[node name=\"" << node.name << "\"";
 
     if (isRoot) {
-        // Root node: type only, no parent.
-        out << " type=\"Node3D\"";
+        // Root node: no parent, but it may still be an instanced scene.
+        if (!node.instanceResId.empty()) {
+            out << " instance=ExtResource(\"" << node.instanceResId << "\")";
+        } else {
+            out << " type=\"" << (node.godotType.empty() ? "Node3D" : node.godotType) << "\"";
+        }
     } else {
         if (!parentPath.empty()) {
             out << " parent=\"" << parentPath << "\"";
