@@ -285,8 +285,9 @@ YamlNode parseFlowSequenceStr(const std::string& str) {
 // Block (indentation-based) parser
 // ---------------------------------------------------------------------------
 
-// Forward declaration
+// Forward declarations
 YamlNode parseBlock(const std::vector<std::string>& lines, size_t& idx, int baseIndent);
+YamlNode parseSequence(const std::vector<std::string>& lines, size_t& idx, int baseIndent);
 
 // Find the colon separator in a line that separates key from value.
 // Returns the position of ':', or std::string::npos.
@@ -410,7 +411,13 @@ YamlNode parseMapping(const std::vector<std::string>& lines, size_t& idx, int ba
 
             int nextIndent = indentOf(lines[peekIdx]);
 
-            if (nextIndent <= baseIndent) {
+            if (nextIndent == baseIndent && isSequenceItem(lines[peekIdx], nextIndent)) {
+                // Same-indent sequence (common Unity YAML pattern):
+                //   m_Component:
+                //   - component: {fileID: 123}
+                idx = peekIdx;
+                node.map[key] = parseSequence(lines, idx, baseIndent);
+            } else if (nextIndent <= baseIndent) {
                 // Next line is at same or lesser indent — empty scalar value
                 node.map[key] = YamlNode::makeScalar("");
             } else {
