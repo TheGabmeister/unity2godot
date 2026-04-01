@@ -536,6 +536,69 @@ std::shared_ptr<GodotNode> convertPrefabInstance(SceneContext& ctx,
         }
     }
 
+    // FBX implicit material matching: when instancing an FBX with no explicit
+    // material overrides, use ufbx to read the FBX's internal material names
+    // and match them against converted materials by filename.
+    bool hasMatOverrides = false;
+    for (auto& [k, v] : node->properties) {
+        if (k.find("surface_material_override") == 0) { hasMatOverrides = true; break; }
+    }
+    if (!hasMatOverrides && !node->childOverrides.empty()) hasMatOverrides = true;
+
+    if (!hasMatOverrides) {
+        auto guidIt = ctx.guids->find(prefabGuid);
+        if (guidIt != ctx.guids->end() && guidIt->second.type == AssetType::FBX) {
+            std::string diskPath = fbxDiskPath(prefabGuid, *ctx.guids, ctx.outputDir);
+            if (!diskPath.empty() && fs::exists(diskPath)) {
+                ufbx_error error;
+                ufbx_scene* fbxScene = ufbx_load_file(diskPath.c_str(), NULL, &error);
+                if (fbxScene) {
+                    // Find mesh nodes and their materials.
+                    for (size_t ni = 0; ni < fbxScene->nodes.count; ni++) {
+                        ufbx_node* fbxNode = fbxScene->nodes.data[ni];
+                        if (!fbxNode->mesh) continue;
+                        std::string meshNodeName(fbxNode->name.data, fbxNode->name.length);
+
+                        for (size_t mi = 0; mi < fbxNode->mesh->materials.count; mi++) {
+                            ufbx_material* fbxMat = fbxNode->mesh->materials.data[mi];
+                            if (!fbxMat) continue;
+                            std::string fbxMatName(fbxMat->name.data, fbxMat->name.length);
+
+                            // Search GUID table for a .mat with a matching name.
+                            // Prefer same folder as the FBX, fall back to any match.
+                            std::string fbxDir = getDirectory(guidIt->second.unityPath);
+                            std::string bestGuid;
+                            bool foundSameDir = false;
+                            for (auto& [g, entry] : *ctx.guids) {
+                                if (entry.type != AssetType::Material) continue;
+                                if (getStem(entry.unityPath) != fbxMatName) continue;
+                                if (ctx.materialMap->find(g) == ctx.materialMap->end()) continue;
+                                if (getDirectory(entry.unityPath) == fbxDir) {
+                                    bestGuid = g;
+                                    foundSameDir = true;
+                                    break;
+                                }
+                                if (!foundSameDir && bestGuid.empty())
+                                    bestGuid = g;
+                            }
+                            if (!bestGuid.empty()) {
+                                auto& matResPath = ctx.materialMap->at(bestGuid);
+                                std::string matResId = addExtResource(
+                                    ctx.extResources, "Material", matResPath);
+                                node->childOverrides.push_back({
+                                    meshNodeName,
+                                    "surface_material_override/" + std::to_string(mi),
+                                    "ExtResource(\"" + matResId + "\")"
+                                });
+                            }
+                        }
+                    }
+                    ufbx_free_scene(fbxScene);
+                }
+            }
+        }
+    }
+
     return node;
 }
 
