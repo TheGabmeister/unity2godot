@@ -70,7 +70,25 @@ PrefabMap convertPrefabs(const GuidTable& guids,
         fs::create_directories(fs::path(outPath).parent_path());
 
         // Set root node name from the prefab filename.
-        data.root->name = getStem(entry.unityPath);
+        std::string prefabName = getStem(entry.unityPath);
+
+        // If the prefab root is itself an external scene instance (eg. FBX),
+        // wrap it in a plain Node3D root so nested prefab instancing in scenes
+        // keeps the internal compensated transform reliably.
+        if (!data.root->instanceResId.empty()) {
+            auto wrapper = std::make_shared<GodotNode>();
+            wrapper->name = prefabName;
+            wrapper->godotType = "Node3D";
+
+            if (data.root->name == prefabName) {
+                data.root->name += "_Instance";
+            }
+
+            wrapper->children.push_back(data.root);
+            data.root = std::move(wrapper);
+        } else {
+            data.root->name = prefabName;
+        }
 
         writeTscnFile(outPath, data);
 
