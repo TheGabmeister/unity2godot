@@ -70,3 +70,19 @@ The custom parser (`unity_yaml_parser.cpp`) handles Unity's non-standard YAML va
 ## FBX as Implicit Prefab
 
 In Unity, FBX files act as implicit prefabs — `PrefabInstance` components can reference an FBX file's GUID directly (not just `.prefab` GUIDs). The scene converter checks the prefab map first, then falls back to the GUID table to find FBX files and instance them as `PackedScene` resources.
+
+## FBX Material Override Targeting
+
+When applying material overrides on instanced FBX scenes, the override must target the **mesh child node** inside the FBX, not the instance root. Godot's FBX importer creates child `MeshInstance3D` nodes named after FBX node names (e.g., "Suzanne"). Overrides use `childOverrides` which serialize as separate `[node]` blocks:
+
+```ini
+[node name="monkey" parent="." instance=ExtResource("1")]
+
+[node name="Suzanne" parent="monkey"]
+surface_material_override/0 = ExtResource("2")
+```
+
+Material matching uses three strategies in order:
+1. **Explicit overrides** from `m_Modifications` in PrefabInstance YAML
+2. **FBX internal material names** matched against `.mat` filenames via ufbx
+3. **FBX filename fallback** — match `model.fbx` to `model.mat` (for FBX files with no embedded materials, common with Blender exports)
