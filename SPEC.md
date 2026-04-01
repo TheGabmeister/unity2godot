@@ -46,7 +46,7 @@ A cross-platform desktop tool that converts a `.unitypackage` file into a ready-
     │
     ▼
 [4. Convert each asset type (order matters)]
-    │   a. Textures → copy/transcode to output
+    │   a. Textures → copy to output
     │   b. FBX → copy to output (Godot imports natively)
     │   c. Materials → convert to .tres files
     │   d. Prefabs → convert to .tscn files
@@ -56,10 +56,7 @@ A cross-platform desktop tool that converts a `.unitypackage` file into a ready-
 [5. Generate project.godot + folder structure]
     │
     ▼
-[6. Write Godot .import files for textures and FBX]
-    │
-    ▼
-[7. Produce skip report + cleanup temp dir]
+[6. Produce skip report + cleanup temp dir]
 ```
 
 ### Threading Model
@@ -189,36 +186,9 @@ The parser needs to handle:
 1. **Supported by Godot natively:** PNG, JPG, WebP, BMP, TGA → **copy as-is**
 2. **Not supported:** PSD, EXR → **copy as-is with a warning** that Godot cannot import these formats. User must convert manually. Transcoding support planned for a future version.
 
-### Import Settings (Unity .meta → Godot .import)
+### Import Settings
 
-Read the following from Unity's `TextureImporter` in `.meta` files and generate corresponding Godot `.import` files:
-
-| Unity .meta Field | Godot .import Field | Notes |
-|---|---|---|
-| `m_sRGBTexture` | `flags/srgb` | Linear vs sRGB color space |
-| `m_TextureType: 1` (NormalMap) | `compress/normal_map=1` | Normal map detection |
-| `m_FilterMode: 0/1/2` | `flags/filter` | Point/Bilinear/Trilinear |
-| `m_WrapMode: 0/1` | `flags/repeat` | Repeat/Clamp |
-| `m_MaxTextureSize` | `size_limit/*` | Max import resolution |
-
-### Godot .import File Format
-
-```ini
-[remap]
-importer="texture"
-type="CompressedTexture2D"
-path="res://.godot/imported/<filename>-<hash>.ctex"
-
-[deps]
-source_file="res://Textures/brick_albedo.png"
-
-[params]
-compress/mode=2
-compress/normal_map=0
-flags/repeat=true
-flags/filter=true
-flags/srgb=true
-```
+No `.import` files are generated. Godot auto-generates these on first project open. Texture import settings from Unity `.meta` files (normal map detection, filter/wrap modes, sRGB) are not carried over in V1 — the user must configure these manually in Godot. Automatic import setting mapping is planned for a future version.
 
 ---
 
@@ -447,13 +417,10 @@ output_folder/
 ├── Scenes/
 │   └── MainLevel.tscn
 ├── Models/
-│   ├── building.fbx
-│   └── building.fbx.import
+│   └── building.fbx
 ├── Textures/
 │   ├── brick_albedo.png
-│   ├── brick_albedo.png.import
-│   ├── brick_normal.png
-│   └── brick_normal.png.import
+│   └── brick_normal.png
 ├── Materials/
 │   └── brick.tres
 └── Prefabs/
@@ -669,6 +636,7 @@ The following are explicitly **not supported** in V1 and will be logged in the s
 ## 15. Future Versions (Not In Scope — Reference Only)
 
 - V1.x: Texture transcoding (PSD/EXR → PNG) via stb_image
+- V1.x: Texture import settings mapping (normal map detection, filter/wrap modes, sRGB) via .import files
 - V2: Skinned meshes, animations, blend shapes
 - V3: Audio import, particle system basic conversion
 - V4: C# → GDScript transpilation (limited subset)
