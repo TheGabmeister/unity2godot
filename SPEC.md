@@ -356,38 +356,69 @@ Note: if a renamed node is the target of a prefab override (referenced by its or
    - Otherwise (empty/grouping) → `Node3D`
 4. Apply coordinate system conversion to all transforms
 5. Resolve material references: MeshRenderer's material list → ExtResource refs to converted .tres files
-6. Write the .tscn file
+6. For FBX instances, apply material overrides as child node overrides using ufbx-extracted node names (see section 5, "Material Overrides on FBX Instances")
+7. Calculate `load_steps` as the total count of `[ext_resource]` + `[sub_resource]` entries in the file
+8. Write the .tscn file
 
-### Coordinate System Conversion
+### Transform Conversion
 
-Unity is **left-handed** (Y-up, Z-forward). Godot is **right-handed** (Y-up, -Z-forward).
+Unity is **left-handed** (Y-up, Z-forward). Godot is **right-handed** (Y-up, -Z-forward). Unity stores transforms as separate position (Vector3), rotation (Quaternion), and scale (Vector3). Godot serializes transforms as a `Transform3D`: a 3x3 basis matrix (rotation + scale) followed by the origin (position).
 
-Conversion applied to **scene-level transforms only** (FBX files are handled by Godot's importer):
+Conversion is applied to **scene-level transforms only** (FBX files are handled by Godot's importer). Each node's transform is **local** (relative to parent), same as Unity — convert each local transform independently.
+
+The full conversion algorithm, in order:
+
+**Step 1: Apply handedness conversion to Unity's raw values**
 
 ```
-godot_position.x =  unity_position.x
-godot_position.y =  unity_position.y
-godot_position.z = -unity_position.z
+position.x =  unity_position.x
+position.y =  unity_position.y
+position.z = -unity_position.z
 
-godot_rotation.x = -unity_rotation.x
-godot_rotation.y = -unity_rotation.y
-godot_rotation.z =  unity_rotation.z
-godot_rotation.w =  unity_rotation.w
+quat.x = -unity_rotation.x
+quat.y = -unity_rotation.y
+quat.z =  unity_rotation.z
+quat.w =  unity_rotation.w
+
+scale = unity_scale  (unchanged — scale is handedness-independent)
 ```
 
-Scale is copied as-is (scale is handedness-independent).
+**Step 2: Convert the handedness-corrected quaternion to a 3x3 rotation matrix**
 
-### Transform3D Serialization
+Given quaternion `(x, y, z, w)` after step 1:
 
-Godot's `Transform3D` is a 3x4 matrix: 3x3 basis (rotation + scale) followed by the origin (position). Unity stores transforms as separate position (Vector3), rotation (Quaternion), and scale (Vector3). The conversion is:
+```
+        | 1-2(y²+z²)   2(xy-wz)    2(xz+wy)  |
+R   =   | 2(xy+wz)     1-2(x²+z²)  2(yz-wx)  |
+        | 2(xz-wy)     2(yz+wx)    1-2(x²+y²) |
+```
 
-1. Convert the quaternion to a 3x3 rotation matrix (basis)
-2. Multiply basis columns by the scale components
-3. Write as `Transform3D(bx.x, by.x, bz.x, bx.y, by.y, bz.y, bx.z, by.z, bz.z, ox, oy, oz)`
+**Step 3: Apply scale to the rotation matrix to produce the basis**
 
-Where `bx/by/bz` are the basis column vectors and `ox/oy/oz` is the origin.
+Multiply each **column** of R by the corresponding scale component:
 
-**Identity transform omission:** Godot omits the `transform` property when it equals the identity (`Transform3D(1,0,0, 0,1,0, 0,0,1, 0,0,0)`). The converter should do the same — only write the `transform` property when it differs from identity. This keeps `.tscn` files clean.
+```
+basis[row][0] = R[row][0] * scale.x    (for all 3 rows)
+basis[row][1] = R[row][1] * scale.y    (for all 3 rows)
+basis[row][2] = R[row][2] * scale.z    (for all 3 rows)
+```
+
+**Step 4: Serialize as Transform3D**
+
+Godot's `.tscn` format serializes row by row, then origin:
+
+```
+Transform3D(
+    basis[0][0], basis[0][1], basis[0][2],
+    basis[1][0], basis[1][1], basis[1][2],
+    basis[2][0], basis[2][1], basis[2][2],
+    position.x,  position.y,  position.z
+)
+```
+
+**Step 5: Omit identity transforms**
+
+If the result equals the identity (`Transform3D(1,0,0, 0,1,0, 0,0,1, 0,0,0)`), omit the `transform` property entirely. This keeps `.tscn` files clean.
 
 ### Node Type Mapping
 
@@ -513,6 +544,7 @@ Unity paths are mapped to Godot paths by stripping the `Assets/` prefix:
 Assets/Models/building.fbx  →  Models/building.fbx
 Assets/Textures/brick.png   →  Textures/brick.png
 Assets/Scenes/Main.unity    →  Scenes/Main.tscn
+Assets/Prefabs/Lamp.prefab  →  Prefabs/Lamp.tscn
 ```
 
 ### Special Characters in Names
@@ -530,7 +562,7 @@ A minimal but valid `project.godot` file:
 config_version=5
 
 [application]
-config/name="<derived from package name>"
+config/name="<.unitypackage filename with extension stripped>"
 config/features=PackedStringArray("4.6")
 
 [rendering]
