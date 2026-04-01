@@ -9,6 +9,7 @@
 #include <set>
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
 namespace fs = std::filesystem;
 
@@ -140,6 +141,90 @@ std::vector<std::string> extractFbxMeshNodeNames(const std::string& fbxPath) {
     return names;
 }
 
+std::string trimCopy(const std::string& s) {
+    size_t start = s.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    size_t end = s.find_last_not_of(" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
+
+bool parseBoolLike(const std::string& value, bool defaultValue) {
+    std::string trimmed = trimCopy(value);
+    if (trimmed == "1" || trimmed == "true" || trimmed == "True") return true;
+    if (trimmed == "0" || trimmed == "false" || trimmed == "False") return false;
+    return defaultValue;
+}
+
+float parseFloatLike(const std::string& value, float defaultValue) {
+    try {
+        return std::stof(trimCopy(value));
+    } catch (...) {
+        return defaultValue;
+    }
+}
+
+struct UnityFbxImportSettings {
+    float globalScale = 1.0f;
+    bool useFileScale = true;
+    bool foundModelImporter = false;
+    bool foundMeshesBlock = false;
+};
+
+UnityFbxImportSettings parseUnityFbxImportSettings(const std::string& metaPath) {
+    UnityFbxImportSettings settings;
+    if (metaPath.empty()) return settings;
+
+    std::ifstream file(metaPath);
+    if (!file) return settings;
+
+    bool inModelImporter = false;
+    bool inMeshesBlock = false;
+    std::string line;
+    while (std::getline(file, line)) {
+        size_t indent = line.find_first_not_of(' ');
+        if (indent == std::string::npos) continue;
+
+        std::string trimmed = trimCopy(line);
+        if (trimmed.empty()) continue;
+
+        if (indent == 0) {
+            inModelImporter = (trimmed == "ModelImporter:");
+            settings.foundModelImporter = settings.foundModelImporter || inModelImporter;
+            inMeshesBlock = false;
+            continue;
+        }
+        if (!inModelImporter) continue;
+
+        if (indent == 2) {
+            inMeshesBlock = (trimmed == "meshes:");
+            settings.foundMeshesBlock = settings.foundMeshesBlock || inMeshesBlock;
+            continue;
+        }
+        if (!inMeshesBlock || indent < 4) continue;
+
+        size_t colon = trimmed.find(':');
+        if (colon == std::string::npos) continue;
+
+        std::string key = trimCopy(trimmed.substr(0, colon));
+        std::string value = trimCopy(trimmed.substr(colon + 1));
+        if (key == "globalScale") {
+            settings.globalScale = parseFloatLike(value, settings.globalScale);
+        } else if (key == "useFileScale") {
+            settings.useFileScale = parseBoolLike(value, settings.useFileScale);
+        }
+    }
+
+    return settings;
+}
+
+void applyUniformScale(Transform3D& t, float uniformScale) {
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 3; ++c) {
+            t.basis[r][c] *= uniformScale;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tree builder
 // ---------------------------------------------------------------------------
@@ -164,6 +249,10 @@ struct SceneContext {
     // External resource tracking.
     std::vector<ExtResource> extResources;
 
+    // Cached FBX import compensation, keyed by GUID.
+    std::map<std::string, float> fbxImportScaleCache;
+    std::set<std::string> loggedFbxImportScaleGuids;
+
     // References.
     const GuidTable* guids = nullptr;
     const std::map<std::string, std::string>* materialMap = nullptr;
@@ -171,6 +260,48 @@ struct SceneContext {
     std::string outputDir;
     Log* log = nullptr;
 };
+
+float getFbxImportScale(SceneContext& ctx, const std::string& guid) {
+    auto cached = ctx.fbxImportScaleCache.find(guid);
+    if (cached != ctx.fbxImportScaleCache.end()) {
+        return cached->second;
+    }
+
+    float scale = 1.0f;
+    auto guidIt = ctx.guids->find(guid);
+    if (guidIt == ctx.guids->end() || guidIt->second.type != AssetType::FBX) {
+        ctx.fbxImportScaleCache[guid] = scale;
+        return scale;
+    }
+
+    const AssetEntry& entry = guidIt->second;
+    UnityFbxImportSettings settings = parseUnityFbxImportSettings(entry.metaFilePath);
+    scale *= settings.globalScale;
+
+    if (!settings.useFileScale && !entry.tempFilePath.empty()) {
+        ufbx_error error;
+        ufbx_scene* scene = ufbx_load_file(entry.tempFilePath.c_str(), NULL, &error);
+        if (scene) {
+            double unitMeters = scene->settings.unit_meters;
+            if (unitMeters > 0.0) {
+                scale *= static_cast<float>(1.0 / unitMeters);
+            }
+            ufbx_free_scene(scene);
+        } else {
+            ctx.log->warn("Failed to inspect FBX unit scale for " + entry.unityPath
+                          + "; Unity import scale compensation may be missing.");
+        }
+    }
+
+    if (std::abs(scale - 1.0f) > 1e-4f
+        && ctx.loggedFbxImportScaleGuids.insert(guid).second) {
+        ctx.log->info("Applying Unity FBX import scale compensation x"
+                      + fmtFloat(scale) + " for " + entry.unityPath);
+    }
+
+    ctx.fbxImportScaleCache[guid] = scale;
+    return scale;
+}
 
 void buildObjectModel(SceneContext& ctx) {
     // First pass: index all documents.
@@ -297,9 +428,6 @@ std::shared_ptr<GodotNode> convertNode(SceneContext& ctx,
 
     // Convert transform.
     Transform3D t = unityToGodot(transform.position, transform.rotation, transform.scale);
-    if (!isIdentity(t)) {
-        node->transform = serializeTransform(t);
-    }
 
     // Determine the Godot type based on attached components.
     if (go) {
@@ -322,6 +450,11 @@ std::shared_ptr<GodotNode> convertNode(SceneContext& ctx,
                     node->instanceResId = resId;
                     // When instancing, godotType is not emitted.
                     node->godotType.clear();
+
+                    float importScale = getFbxImportScale(ctx, meshGuid);
+                    if (std::abs(importScale - 1.0f) > 1e-4f) {
+                        applyUniformScale(t, importScale);
+                    }
 
                     // Material overrides.
                     auto& matSeq = meshRendererDoc->root["m_Materials"];
@@ -409,6 +542,10 @@ std::shared_ptr<GodotNode> convertNode(SceneContext& ctx,
             node->properties.push_back({"near", fmtFloat(cd.nearClip)});
             node->properties.push_back({"far", fmtFloat(cd.farClip)});
         }
+    }
+
+    if (!isIdentity(t)) {
+        node->transform = serializeTransform(t);
     }
 
     // Recurse into children.
@@ -567,12 +704,16 @@ std::shared_ptr<GodotNode> convertPrefabInstance(SceneContext& ctx,
         }
     }
 
-    // Apply transform.
-    if (hasPos || hasRot || hasScl) {
-        Transform3D t = unityToGodot(pos, rot, scl);
-        if (!isIdentity(t)) {
-            node->transform = serializeTransform(t);
+    // Apply transform, including Unity FBX importer scale compensation.
+    Transform3D t = unityToGodot(pos, rot, scl);
+    if (sourcePrefabIsFbx) {
+        float importScale = getFbxImportScale(ctx, prefabGuid);
+        if (std::abs(importScale - 1.0f) > 1e-4f) {
+            applyUniformScale(t, importScale);
         }
+    }
+    if (!isIdentity(t)) {
+        node->transform = serializeTransform(t);
     }
 
     // FBX implicit material matching: when instancing an FBX with no explicit
