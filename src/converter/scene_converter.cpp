@@ -439,24 +439,35 @@ std::shared_ptr<GodotNode> convertPrefabInstance(SceneContext& ctx,
         return nullptr;
     }
 
-    // Look up the prefab in the prefab map.
+    // Look up the prefab in the prefab map first, then fall back to
+    // the GUID table (FBX files act as implicit prefabs in Unity).
+    std::string instanceResPath;
+    std::string instanceName;
+
     auto prefabIt = ctx.prefabMap->find(prefabGuid);
-    if (prefabIt == ctx.prefabMap->end()) {
-        ctx.log->warn("PrefabInstance references unknown prefab GUID: " + prefabGuid);
-        // Create a placeholder Node3D.
-        auto node = std::make_shared<GodotNode>();
-        node->name = "MissingPrefab";
-        node->godotType = "Node3D";
-        return node;
+    if (prefabIt != ctx.prefabMap->end()) {
+        instanceResPath = prefabIt->second;
+        instanceName = getStem(instanceResPath);
+    } else {
+        // Check if this GUID points to an FBX file in the GUID table.
+        auto guidIt = ctx.guids->find(prefabGuid);
+        if (guidIt != ctx.guids->end() && guidIt->second.type == AssetType::FBX) {
+            instanceResPath = "res://" + stripAssetsPrefix(guidIt->second.unityPath);
+            instanceName = getStem(guidIt->second.unityPath);
+        } else {
+            ctx.log->warn("PrefabInstance references unknown prefab GUID: " + prefabGuid);
+            auto node = std::make_shared<GodotNode>();
+            node->name = "MissingPrefab";
+            node->godotType = "Node3D";
+            return node;
+        }
     }
 
     auto node = std::make_shared<GodotNode>();
-    std::string resId = addExtResource(ctx.extResources, "PackedScene", prefabIt->second);
+    std::string resId = addExtResource(ctx.extResources, "PackedScene", instanceResPath);
     node->instanceResId = resId;
 
-    // Determine the node name from the prefab path (stem of the .tscn).
-    std::string prefabName = getStem(prefabIt->second);
-    node->name = sanitizeName(prefabName);
+    node->name = sanitizeName(instanceName);
 
     // Process m_Modifications to extract transform and material overrides.
     Vec3 pos{0, 0, 0};
