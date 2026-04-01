@@ -689,6 +689,8 @@ The following are explicitly **not supported** in V1 and will be logged in the s
 
 6. **Unsupported texture formats:** PSD and EXR files are copied as-is but Godot cannot import them. The user must manually convert these to PNG/JPG. Automatic transcoding is planned for a future version.
 
+7. **FBX import-time root transforms:** Unity and Godot may apply different corrections when importing the same FBX file (e.g., axis rotation, scale factor), since FBX files can be authored in various coordinate systems (Z-up, Y-up) and unit scales. This can cause models to appear rotated or scaled differently compared to Unity, even though our scene-level coordinate conversion is correct. The converter cannot control Godot's FBX import behavior. Mitigation: the user manually adjusts affected models in Godot.
+
 ---
 
 ## 15. Future Versions (Not In Scope — Reference Only)
