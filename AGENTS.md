@@ -16,11 +16,13 @@ If `SPEC.md` and the current code disagree, treat `SPEC.md` as the intended v1 t
 
 ## Current State
 
-- The repo currently contains a minimal executable in `src/main.cpp`.
+- The repo already has a modular source layout under `src/gui/`, `src/converter/`, and `src/util/`, and those files are wired into `CMakeLists.txt`.
+- `src/main.cpp` is the entry point and app bootstrap, not the only implementation file.
 - Third-party libraries are vendored under `thirdparty/`.
-- The long-term module layout described in `SPEC.md` does not fully exist yet.
+- `test/` contains sample inputs and manual verification assets, including `test/test.unitypackage`, a Unity sample project under `test/URP/`, and a generated Godot project under `test/godot/`.
+- The long-term module layout described in `SPEC.md` mostly exists, but many modules are still early and incomplete.
 
-When adding new code, prefer creating the structure described in `SPEC.md` instead of growing `main.cpp`.
+When adding new code, prefer extending the existing module structure instead of growing `main.cpp` or creating new grab-bag utility files.
 
 ## Build And Run
 
@@ -37,6 +39,11 @@ cmake --build build
 ```
 
 Run from the build output directory or via the generated IDE project.
+
+Typical executable locations:
+
+- Windows multi-config generators: `build/Debug/unity2godot.exe`
+- Single-config generators on Windows/Linux/macOS: `build/unity2godot`
 
 If you add new dependencies or source files, update `CMakeLists.txt` in the same change.
 
@@ -90,10 +97,12 @@ Take extra care in these parts of the converter:
 
 ## Testing Expectations
 
-There is no full automated test suite yet. When making converter changes:
+There is no full automated test suite or CTest target yet. When making converter changes:
 
 - Build the project successfully.
 - Sanity-check new code paths locally when possible.
+- Prefer using the sample package in `test/test.unitypackage` for manual conversion checks.
+- Treat `test/godot/` and other files under `test/` as fixtures/manual artifacts. Do not refresh or rewrite them unless the task explicitly calls for updating those outputs.
 - If you cannot verify behavior end-to-end, say so clearly in your final note.
 
 If you add parser or conversion helpers that are easy to unit test, add lightweight tests when the repo gains a test target.
@@ -103,6 +112,12 @@ If you add parser or conversion helpers that are easy to unit test, add lightwei
 - Do not modify vendored libraries unless the task explicitly requires it.
 - Prefer wrapping third-party APIs in local adapter code instead of scattering direct calls everywhere.
 - If a vendored library must be patched, keep the patch minimal and document why.
+
+## Repository Hygiene
+
+- Keep diffs tight. This repo may contain tracked sample output and editor-generated files under `test/`; avoid incidental churn there.
+- Before editing or regenerating anything under `test/`, confirm it is necessary for the task.
+- Do not silently clean up, reformat, rename, or reorganize large fixture directories as part of unrelated work.
 
 ## File Organization
 
