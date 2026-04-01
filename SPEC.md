@@ -1,0 +1,688 @@
+# Unity2Godot Converter — V1 Specification
+
+## Overview
+
+A cross-platform desktop tool that converts a `.unitypackage` file into a ready-to-open Godot 4.6.1 project. V1 is limited to static meshes (FBX), textures, materials (URP + legacy), and scenes. No C# scripts, custom shaders, skinned meshes, animations, or audio.
+
+**Target Godot version:** 4.6.1 (uses ufbx 0.20.0 internally for FBX import)
+
+---
+
+## Architecture
+
+### Language & Build
+
+- **C++17**, built with **CMake** (minimum 3.16)
+- All dependencies vendored in `thirdparty/`
+- Cross-platform: **Windows, macOS, Linux**
+
+### Dependencies (all vendored in `thirdparty/`)
+
+| Library | Purpose |
+|---|---|
+| **ufbx 0.20.0** | Parse FBX files to extract sub-object names for reference resolution |
+| **Dear ImGui** | GUI framework (immediate mode) |
+| **GLFW** | Windowing/input backend for ImGui |
+| **OpenGL3** | Rendering backend for ImGui (system-provided) |
+| **nativefiledialog-extended** or **tinyfiledialogs** | Native OS file/folder picker dialogs |
+| **miniz** | gzip/deflate decompression for .unitypackage |
+| **microtar** (or similar) | Tar archive reading |
+| **stb_image** | Load PSD/TGA/EXR textures for transcoding |
+| **stb_image_write** | Write PNG files for texture transcoding |
+
+---
+
+## Conversion Pipeline
+
+### High-Level Flow
+
+```
+.unitypackage (tar.gz)
+    │
+    ▼
+[1. Extract to temp dir]
+    │
+    ▼
+[2. Build GUID → path table from all pathname + asset.meta files]
+    │
+    ▼
+[3. Classify assets by type: scene, prefab, material, texture, FBX, other]
+    │
+    ▼
+[4. Convert each asset type (order matters)]
+    │   a. Textures → copy/transcode to output
+    │   b. FBX → copy to output (Godot imports natively)
+    │   c. Materials → convert to .tres files
+    │   d. Prefabs → convert to .tscn files
+    │   e. Scenes → convert to .tscn files
+    │
+    ▼
+[5. Generate project.godot + folder structure]
+    │
+    ▼
+[6. Write Godot .import files for textures and FBX]
+    │
+    ▼
+[7. Produce skip report + cleanup temp dir]
+```
+
+### Threading Model
+
+- Conversion runs on a **background worker thread**
+- Progress callbacks update the ImGui UI on the main thread
+- The worker reports: current phase, asset name, progress percentage, warnings/errors
+- Cancellation is supported via an atomic flag checked between assets
+
+---
+
+## 1. Package Extraction
+
+### Input Format
+
+`.unitypackage` is a **tar.gz** archive. Inside, each asset is stored in a GUID-named folder:
+
+```
+<guid>/
+    pathname    — text file containing the asset's Unity project path (e.g., "Assets/Models/building.fbx")
+    asset       — the actual file data
+    asset.meta  — Unity YAML with import settings, GUID declaration, etc.
+    preview.png — optional thumbnail (ignored)
+```
+
+### Extraction Process
+
+1. Decompress gzip layer using **miniz**
+2. Read tar entries using **microtar**
+3. Extract all entries to a **temporary directory**
+4. Build GUID → path mapping table by reading every `pathname` file
+5. Parse every `asset.meta` file to extract:
+   - GUID (redundant with folder name but validates)
+   - Asset type / importer type
+   - Import settings (texture settings, FBX settings, etc.)
+6. Temp directory is deleted after conversion completes (or on cancellation/error)
+
+---
+
+## 2. GUID Resolution
+
+### GUID Table
+
+A complete in-memory map is built **upfront** before any conversion begins:
+
+```
+Map<string, AssetEntry> guidTable;
+
+struct AssetEntry {
+    string guid;
+    string unityPath;       // e.g., "Assets/Textures/brick_albedo.png"
+    string tempFilePath;    // path to extracted asset data
+    AssetType type;         // texture, fbx, material, scene, prefab, script, other
+    MetaData meta;          // parsed import settings from .meta
+};
+```
+
+### GUID + fileID References
+
+Unity references assets via `{fileID: <id>, guid: <guid>, type: <type>}`. Resolution:
+
+- **guid** → look up in the GUID table to find the asset
+- **fileID** → identifies a sub-object within the asset (e.g., a specific mesh within an FBX, or a specific component). For FBX files, fileID is a deterministic hash of the sub-object name.
+- **type** → 2 = native Unity asset, 3 = external asset (FBX, texture, etc.)
+
+---
+
+## 3. Unity YAML Parser
+
+### Approach: Custom Lightweight Parser
+
+Unity scene/prefab/material files use a **non-standard YAML 1.1 variant** with custom tags. Rather than fighting a YAML library, we build a purpose-built parser.
+
+### Unity YAML Structure
+
+```yaml
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &123456
+GameObject:
+  m_Name: MyObject
+  m_Component:
+  - component: {fileID: 123457}
+--- !u!4 &123457
+Transform:
+  m_LocalPosition: {x: 1, y: 2, z: 3}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_Children:
+  - {fileID: 234567}
+  m_Father: {fileID: 0}
+```
+
+### Parser Requirements
+
+The parser needs to handle:
+
+- `--- !u!<classID> &<fileID>` document separators → extract classID and local fileID
+- Nested key-value mappings (indentation-based)
+- Inline flow mappings: `{x: 1, y: 2, z: 3}`
+- Inline flow sequences: `- {fileID: 123}`
+- Multi-document files (scenes contain many `---` separated documents)
+- String values (quoted and unquoted)
+- Numeric values (int, float, including scientific notation)
+
+### Unity Class IDs We Need
+
+| ClassID | Unity Type | Purpose |
+|---|---|---|
+| 1 | GameObject | Scene hierarchy node |
+| 4 | Transform | Position, rotation, scale, parent-child |
+| 21 | Material | Material properties and shader reference |
+| 23 | MeshRenderer | Material assignments on a mesh |
+| 25 | Renderer | Base renderer (material list) |
+| 33 | MeshFilter | Mesh asset reference |
+| 108 | Light | Light type, color, intensity, range |
+| 20 | Camera | FOV, near/far clip, projection type |
+| 1001 | PrefabInstance | Prefab instantiation + overrides |
+| 1660057539 | SceneRoots | Root object list (Unity 2022+) |
+
+---
+
+## 4. Texture Handling
+
+### Copy & Transcode
+
+1. **Supported by Godot natively:** PNG, JPG, WebP, BMP → **copy as-is**
+2. **Not supported / limited:** PSD, TGA, EXR → **transcode to PNG** using stb_image + stb_image_write
+3. Update all material references to point to the transcoded `.png` filename
+
+### Import Settings (Unity .meta → Godot .import)
+
+Read the following from Unity's `TextureImporter` in `.meta` files and generate corresponding Godot `.import` files:
+
+| Unity .meta Field | Godot .import Field | Notes |
+|---|---|---|
+| `m_sRGBTexture` | `flags/srgb` | Linear vs sRGB color space |
+| `m_TextureType: 1` (NormalMap) | `compress/normal_map=1` | Normal map detection |
+| `m_FilterMode: 0/1/2` | `flags/filter` | Point/Bilinear/Trilinear |
+| `m_WrapMode: 0/1` | `flags/repeat` | Repeat/Clamp |
+| `m_MaxTextureSize` | `size_limit/*` | Max import resolution |
+
+### Godot .import File Format
+
+```ini
+[remap]
+importer="texture"
+type="CompressedTexture2D"
+path="res://.godot/imported/<filename>-<hash>.ctex"
+
+[deps]
+source_file="res://Textures/brick_albedo.png"
+
+[params]
+compress/mode=2
+compress/normal_map=0
+flags/repeat=true
+flags/filter=true
+flags/srgb=true
+```
+
+---
+
+## 5. FBX Handling
+
+### Approach: Keep FBX, Let Godot Import
+
+FBX files are **copied directly** to the Godot project, preserving the original Unity folder structure (minus the `Assets/` prefix). Godot 4.6.1 natively imports FBX using its bundled ufbx.
+
+### Why ufbx Is Still Needed in the Converter
+
+Even though we don't convert FBX→glTF, we use **ufbx** in the converter to:
+
+1. **Validate** that FBX files are readable and not corrupt
+2. **Extract sub-object names** (mesh names, node names) to help resolve Unity's fileID references when building scene node paths
+3. **Read FBX metadata** (units, coordinate system) if needed for .import hints
+
+### Scene References to FBX
+
+When a Unity scene instances a mesh from an FBX file, the Godot scene will use `instance = ExtResource(...)` to load the entire FBX as a sub-scene at the correct transform. Individual mesh selection within the FBX is not performed — the whole model is instanced.
+
+---
+
+## 6. Material Conversion
+
+### Shader Scope
+
+Three shader families are supported:
+
+| Unity Shader | Godot Material | Notes |
+|---|---|---|
+| `Universal Render Pipeline/Lit` | `StandardMaterial3D` | Full PBR mapping |
+| `Universal Render Pipeline/Unlit` | `StandardMaterial3D` (unshaded) | `shading_mode = SHADING_MODE_UNSHADED` |
+| `Standard` (Built-in) | `StandardMaterial3D` | Legacy Built-in pipeline, full PBR |
+
+Unknown/unsupported shaders → create a default white `StandardMaterial3D` + log a warning.
+
+### Property Mapping: URP/Lit → StandardMaterial3D
+
+| Unity Property | Godot Property | Conversion |
+|---|---|---|
+| `_BaseColor` | `albedo_color` | Direct RGBA mapping |
+| `_BaseMap` | `albedo_texture` | Texture reference via GUID |
+| `_Metallic` | `metallic` | Direct float |
+| `_MetallicGlossMap` | `metallic_texture` | Texture reference |
+| `_Smoothness` | `roughness` | `roughness = 1.0 - smoothness` |
+| `_BumpMap` | `normal_texture` | Texture reference |
+| `_BumpScale` | `normal_scale` | Direct float |
+| `_EmissionColor` | `emission` + `emission_energy` | Color → emission, brightness → energy |
+| `_EmissionMap` | `emission_texture` | Texture reference |
+| `_OcclusionMap` | `ao_texture` | Texture reference |
+| `_OcclusionStrength` | `ao_light_affect` | Direct float |
+| `_Cutoff` | `alpha_scissor_threshold` | Alpha cutoff value |
+| `_Surface` (0/1) | `transparency` | 0 = opaque, 1 = alpha |
+| `_Cull` (0/1/2) | `cull_mode` | 0 = off, 1 = front, 2 = back |
+| `_MainTex_ST` | `uv1_scale` + `uv1_offset` | `{x, y}` = scale, `{z, w}` = offset |
+
+### Property Mapping: Legacy Standard → StandardMaterial3D
+
+| Unity Property | Godot Property | Conversion |
+|---|---|---|
+| `_Color` | `albedo_color` | Direct RGBA |
+| `_MainTex` | `albedo_texture` | Texture reference |
+| `_MetallicGlossMap` | `metallic_texture` | Texture reference |
+| `_Glossiness` | `roughness` | `roughness = 1.0 - glossiness` |
+| `_BumpMap` | `normal_texture` | Texture reference |
+| `_EmissionColor` | `emission` | Color mapping |
+| `_EmissionMap` | `emission_texture` | Texture reference |
+| `_OcclusionMap` | `ao_texture` | Texture reference |
+
+### Output Format: .tres
+
+```ini
+[gd_resource type="StandardMaterial3D" format=3]
+
+[ext_resource type="Texture2D" path="res://Textures/brick_albedo.png" id="1"]
+[ext_resource type="Texture2D" path="res://Textures/brick_normal.png" id="2"]
+
+[resource]
+albedo_color = Color(1, 1, 1, 1)
+albedo_texture = ExtResource("1")
+metallic = 0.5
+roughness = 0.5
+normal_enabled = true
+normal_texture = ExtResource("2")
+```
+
+---
+
+## 7. Scene Conversion
+
+### Unity Scene → Godot .tscn
+
+Each `.unity` scene file is converted to a `.tscn` file.
+
+### Process
+
+1. Parse the Unity scene file using the custom YAML parser
+2. Build an in-memory tree of GameObjects from Transform parent-child relationships
+3. For each GameObject, determine its Godot node type:
+   - Has `MeshFilter` + `MeshRenderer` → instance the referenced FBX as `ExtResource`
+   - Has `Light` component → `DirectionalLight3D`, `OmniLight3D`, or `SpotLight3D`
+   - Has `Camera` component → `Camera3D`
+   - Otherwise (empty/grouping) → `Node3D`
+4. Apply coordinate system conversion to all transforms
+5. Resolve material references: MeshRenderer's material list → ExtResource refs to converted .tres files
+6. Write the .tscn file
+
+### Coordinate System Conversion
+
+Unity is **left-handed** (Y-up, Z-forward). Godot is **right-handed** (Y-up, -Z-forward).
+
+Conversion applied to **scene-level transforms only** (FBX files are handled by Godot's importer):
+
+```
+godot_position.x =  unity_position.x
+godot_position.y =  unity_position.y
+godot_position.z = -unity_position.z
+
+godot_rotation.x = -unity_rotation.x
+godot_rotation.y = -unity_rotation.y
+godot_rotation.z =  unity_rotation.z
+godot_rotation.w =  unity_rotation.w
+```
+
+Scale is copied as-is (scale is handedness-independent).
+
+### Node Type Mapping
+
+| Unity Component | Godot Node | Property Mapping |
+|---|---|---|
+| GameObject (empty) | `Node3D` | name, transform |
+| MeshFilter + MeshRenderer | `Node3D` + instanced FBX scene | transform, material overrides |
+| Light (Directional) | `DirectionalLight3D` | color, intensity, shadows |
+| Light (Point) | `OmniLight3D` | color, intensity, range, shadows |
+| Light (Spot) | `SpotLight3D` | color, intensity, range, angle, shadows |
+| Camera | `Camera3D` | fov, near, far, projection |
+
+### Light Conversion Details
+
+| Unity Property | Godot Property | Conversion |
+|---|---|---|
+| `m_Color` | `light_color` | Direct RGB |
+| `m_Intensity` | `light_energy` | Direct float (may need scaling factor) |
+| `m_Range` | `omni_range` / `spot_range` | Direct float |
+| `m_SpotAngle` | `spot_angle` | `godot_angle = unity_angle / 2.0` |
+| `m_Shadows.m_Type` | `shadow_enabled` | 0 = no shadows, 1/2 = shadows on |
+
+### Camera Conversion Details
+
+| Unity Property | Godot Property | Conversion |
+|---|---|---|
+| `field of view` | `fov` | Direct (both vertical FOV in degrees) |
+| `near clip plane` | `near` | Direct float |
+| `far clip plane` | `far` | Direct float |
+| `orthographic` | `projection` | 0 = perspective, 1 = orthogonal |
+| `orthographic size` | `size` | Direct float |
+
+### .tscn Output Format
+
+```ini
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="PackedScene" path="res://Models/building.glb" id="1"]
+[ext_resource type="Material" path="res://Materials/brick.tres" id="2"]
+
+[node name="MainLevel" type="Node3D"]
+
+[node name="Building" parent="." instance=ExtResource("1")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 0, -3)
+
+[node name="GroupNode" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+light_color = Color(1, 0.95, 0.85, 1)
+light_energy = 1.5
+shadow_enabled = true
+```
+
+---
+
+## 8. Prefab Conversion
+
+### Approach: Prefabs → Godot Scenes (.tscn)
+
+Each Unity `.prefab` file is converted to its own `.tscn` file. Scenes that instance prefabs use `instance = ExtResource(...)` to reference the prefab's `.tscn`.
+
+### Prefab Processing
+
+1. Parse the `.prefab` file (same YAML format as scenes)
+2. Build the internal hierarchy (same as scene conversion)
+3. Output as a standalone `.tscn` file in the same relative path
+
+### Prefab Instancing in Scenes
+
+When a scene contains a `PrefabInstance` component (classID 1001):
+
+1. Resolve the prefab GUID to find the corresponding `.tscn`
+2. Create an instanced node: `instance=ExtResource("<id>")`
+3. Apply overrides (see below)
+
+### Override Support (V1 Scope)
+
+V1 supports the two most common override types from `m_Modifications`:
+
+**Transform overrides:**
+- `m_LocalPosition`, `m_LocalRotation`, `m_LocalScale` on any target within the prefab
+- Applied by setting the `transform` property on the instanced node or its children
+
+**Material overrides:**
+- `m_Materials.Array.data[N]` changes on MeshRenderer targets
+- Applied by setting `surface_material_override/N` on the relevant mesh node
+
+All other override types are **logged as warnings** and skipped.
+
+### Nested Prefabs
+
+- **One level deep:** If a prefab references another prefab, the inner prefab reference is **flattened** (its hierarchy is baked directly into the outer prefab's .tscn)
+- Deeper nesting is detected and logged as a warning
+- This avoids recursive override resolution while handling the majority of real-world cases
+
+---
+
+## 9. Godot Project Generation
+
+### Output Structure
+
+```
+output_folder/
+├── project.godot
+├── Scenes/
+│   └── MainLevel.tscn
+├── Models/
+│   ├── building.fbx
+│   └── building.fbx.import
+├── Textures/
+│   ├── brick_albedo.png
+│   ├── brick_albedo.png.import
+│   ├── brick_normal.png
+│   └── brick_normal.png.import
+├── Materials/
+│   └── brick.tres
+└── Prefabs/
+    └── Lamp.tscn
+```
+
+### Folder Mapping
+
+Unity paths are mapped to Godot paths by stripping the `Assets/` prefix:
+
+```
+Assets/Models/building.fbx  →  Models/building.fbx
+Assets/Textures/brick.png   →  Textures/brick.png
+Assets/Scenes/Main.unity    →  Scenes/Main.tscn
+```
+
+### project.godot
+
+A minimal but valid `project.godot` file:
+
+```ini
+; Engine configuration file.
+; It's best edited using the editor, so don't edit it unless you know what you're doing.
+
+config_version=5
+
+[application]
+config/name="<derived from package name>"
+config/features=PackedStringArray("4.6")
+
+[rendering]
+renderer/rendering_method="forward_plus"
+```
+
+---
+
+## 10. GUI
+
+### Framework
+
+- **Dear ImGui** with **GLFW + OpenGL3** backend
+- Native file/folder dialogs via **nativefiledialog-extended** or **tinyfiledialogs**
+
+### Layout: Single-Screen Wizard
+
+```
++----------------------------------------------------+
+| Unity2Godot Converter                         [v1]  |
++----------------------------------------------------+
+|                                                     |
+| Package:  [________________________] [Browse...]    |
+| Output:   [________________________] [Browse...]    |
+|                                                     |
+|  [ Convert ]           Progress: [========>  ] 73%  |
+|                                                     |
+| Log:                                                |
+| +--------------------------------------------------+|
+| | [INFO]  Extracting package...                    ||
+| | [INFO]  Found 142 assets (34 tex, 12 fbx, ...)  ||
+| | [INFO]  Building GUID table...                   ||
+| | [INFO]  Converting textures... (34/34)           ||
+| | [INFO]  Transcoded brick.psd → brick.png         ||
+| | [WARN]  Unknown shader "Custom/Water" on         ||
+| |         material WaterSurface.mat → default mat  ||
+| | [INFO]  Converting scene: MainLevel.unity        ||
+| | [INFO]  Done! 3 warnings, 0 errors               ||
+| +--------------------------------------------------+|
+|                                                     |
+| Skip Report:                                        |
+| +--------------------------------------------------+|
+| | 4 C# scripts skipped                            ||
+| | 2 particle systems skipped                       ||
+| | 1 animator controller skipped                    ||
+| | 1 custom shader skipped (Custom/Water.shader)    ||
+| +--------------------------------------------------+|
++----------------------------------------------------+
+```
+
+### UI Elements
+
+- **Package path:** Text input + Browse button (opens native file dialog, filter: `*.unitypackage`)
+- **Output path:** Text input + Browse button (opens native folder dialog)
+- **Convert button:** Disabled until both paths are set. Disabled during conversion. Text changes to "Cancel" during conversion.
+- **Progress bar:** Shows overall conversion progress with current phase label
+- **Log window:** Scrolling text area with `[INFO]`, `[WARN]`, `[ERROR]` prefixed lines. Auto-scrolls to bottom. Color-coded (white/yellow/red).
+- **Skip report:** Appears after conversion. Categorized summary of all skipped/unsupported assets with counts and file paths.
+
+---
+
+## 11. Error Handling
+
+### Philosophy: Best-Effort with Warnings
+
+The converter **never aborts** due to a single bad asset. Every asset is processed independently.
+
+### Error Categories
+
+| Severity | Behavior | Examples |
+|---|---|---|
+| **INFO** | Normal progress | "Converting texture brick.png", "Found 142 assets" |
+| **WARN** | Asset partially converted or skipped | Unknown shader, missing texture reference, unsupported override type, nested prefab depth > 1 |
+| **ERROR** | Asset failed to convert entirely | Corrupt FBX file, unparseable scene YAML, I/O failure on a specific file |
+| **FATAL** | Conversion cannot continue | Invalid/corrupt .unitypackage, output directory not writable, out of disk space |
+
+### Missing References
+
+When a GUID reference cannot be resolved:
+
+- **Texture ref in material:** Skip the texture, use default value, log warning
+- **Material ref in scene:** Use default material, log warning
+- **Mesh/FBX ref in scene:** Create an empty Node3D placeholder, log warning
+- **Prefab ref in scene:** Create an empty Node3D placeholder, log warning
+
+### Skip Report
+
+After conversion completes, a categorized summary is produced:
+
+```
+=== Skip Report ===
+Skipped asset types (not supported in V1):
+  C# Scripts:           4 files
+  Particle Systems:     2 files
+  Animator Controllers: 1 file
+  Custom Shaders:       1 file
+  Audio Clips:          3 files
+  
+  Details:
+    Scripts/PlayerController.cs
+    Scripts/GameManager.cs
+    ...
+```
+
+---
+
+## 12. Project Structure
+
+```
+unity2godot/
+├── CMakeLists.txt
+├── SPEC.md
+├── README.md
+├── src/
+│   ├── main.cpp                    # Entry point, ImGui setup, main loop
+│   ├── gui/
+│   │   ├── app_window.h/.cpp       # ImGui window management, GLFW setup
+│   │   └── converter_ui.h/.cpp     # Converter UI layout and state
+│   ├── converter/
+│   │   ├── converter.h/.cpp        # Main conversion orchestrator
+│   │   ├── package_extractor.h/.cpp # .unitypackage tar.gz extraction
+│   │   ├── guid_table.h/.cpp       # GUID → path resolution table
+│   │   ├── unity_yaml_parser.h/.cpp # Custom Unity YAML parser
+│   │   ├── texture_converter.h/.cpp # Texture copy/transcode + .import generation
+│   │   ├── material_converter.h/.cpp# Unity material → .tres conversion
+│   │   ├── scene_converter.h/.cpp  # Unity scene → .tscn conversion
+│   │   ├── prefab_converter.h/.cpp # Unity prefab → .tscn conversion
+│   │   ├── light_converter.h/.cpp  # Unity light → Godot light node
+│   │   ├── camera_converter.h/.cpp # Unity camera → Godot camera node
+│   │   ├── project_writer.h/.cpp   # Godot project.godot + folder structure
+│   │   └── coord_convert.h         # Unity ↔ Godot coordinate conversion
+│   └── util/
+│       ├── log.h/.cpp              # Logging system (INFO/WARN/ERROR)
+│       └── types.h                 # Common types, AssetEntry, etc.
+└── thirdparty/
+    ├── ufbx/                       # FBX parser (already present)
+    ├── imgui/                      # Dear ImGui
+    ├── glfw/                       # GLFW windowing
+    ├── miniz/                      # gzip/deflate
+    ├── microtar/                   # Tar reading
+    ├── stb/                        # stb_image + stb_image_write
+    └── nfd/                        # nativefiledialog-extended
+```
+
+---
+
+## 13. Out of Scope (V1)
+
+The following are explicitly **not supported** in V1 and will be logged in the skip report:
+
+- C# scripts and MonoBehaviour components
+- Custom shaders (beyond URP Lit/Unlit and legacy Standard)
+- Skinned meshes / SkinnedMeshRenderer
+- Animations / Animator / AnimationClip
+- Audio clips and AudioSource
+- Particle systems
+- UI Canvas / UGUI elements
+- Terrain data
+- NavMesh data
+- Physics materials (beyond what colliders use)
+- Asset Bundles
+- ScriptableObjects
+- Lightmap data (baked lighting)
+- Reflection probes
+- Video clips
+- Sprite / 2D assets
+- Nested prefabs deeper than 1 level
+- Prefab variants
+
+---
+
+## 14. Known Limitations & Risks
+
+1. **FBX instancing granularity:** Since we instance entire FBX files rather than individual meshes, a Unity scene that uses 3 different meshes from the same FBX will create 3 instances of the full model. This may produce visual duplicates if the FBX contains multiple objects. Mitigation: log a warning when this is detected.
+
+2. **Material overrides on FBX instances:** When Godot instances an FBX, the internal node structure depends on Godot's import. Material overrides on instanced FBX sub-meshes may not map correctly if Godot names the mesh nodes differently than Unity. Mitigation: best-effort path matching, warning on failure.
+
+3. **Unity YAML edge cases:** Stripped/binary scenes won't parse. The converter requires text-mode `.unity` files (which is what `.unitypackage` always contains). Multi-scene setups (additive loading) are converted as independent scenes.
+
+4. **Smoothness → Roughness inversion:** Unity stores smoothness in the alpha channel of the metallic map texture. Godot uses a separate roughness value/texture. When a metallic-smoothness packed texture is detected, the converter would ideally split/invert the alpha channel. V1 will do the scalar inversion (`roughness = 1 - smoothness`) but will **not** modify texture data. Packed metallic-smoothness textures will produce a warning.
+
+5. **Light intensity:** Unity and Godot use different light intensity units. Unity URP uses physical units (lumens/lux) while Godot uses an arbitrary energy multiplier. Direct value copy may produce too-bright or too-dim lighting. Mitigation: copy value as-is, document that manual adjustment may be needed.
+
+6. **Texture transcoding quality:** PSD files with layers are flattened to the composite image via stb_image. Layer information is lost. EXR HDR data is tone-mapped to 8-bit PNG (lossy).
+
+---
+
+## 15. Future Versions (Not In Scope — Reference Only)
+
+- V2: Skinned meshes, animations, blend shapes
+- V3: Audio import, particle system basic conversion
+- V4: C# → GDScript transpilation (limited subset)
+- V5: Custom shader → Godot shader conversion
