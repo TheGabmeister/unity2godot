@@ -2,7 +2,7 @@
 
 [ext_resource type="PackedScene" path="res://_Project/monkey.tscn" id="1"]
 
-[node name="SampleScene" type="Node3D"]
+[node name="Scene" type="Node3D"]
 
 [node name="Main Camera" parent="." type="Camera3D"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 10)
