@@ -1,0 +1,15 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="PackedScene" path="res://_Project/monkey.tscn" id="1"]
+
+[node name="SampleScene" type="Node3D"]
+
+[node name="GameObject" parent="." type="Node3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 10)
+
+[node name="GameObject_2" parent="." type="Node3D"]
+transform = Transform3D(0.866025, -0.383022, 0.321394, 0, 0.642788, 0.766044, -0.5, -0.663414, 0.55667, 0, 3, 0)
+
+[node name="GameObject_3" parent="." type="Node3D"]
+
+[node name="monkey" parent="." instance=ExtResource("1")]
