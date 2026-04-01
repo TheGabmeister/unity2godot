@@ -346,7 +346,7 @@ Scale is copied as-is (scale is handedness-independent).
 ```ini
 [gd_scene load_steps=3 format=3]
 
-[ext_resource type="PackedScene" path="res://Models/building.glb" id="1"]
+[ext_resource type="PackedScene" path="res://Models/building.fbx" id="1"]
 [ext_resource type="Material" path="res://Materials/brick.tres" id="2"]
 
 [node name="MainLevel" type="Node3D"]
