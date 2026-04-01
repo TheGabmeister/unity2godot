@@ -188,7 +188,7 @@ The parser needs to handle:
 
 ## 4. Texture Handling
 
-### Copy & Transcode
+### Copy
 
 1. **Supported by Godot natively:** PNG, JPG, WebP, BMP, TGA → **copy as-is**
 2. **Not supported:** PSD, EXR → **copy as-is with a warning** that Godot cannot import these formats. User must convert manually. Transcoding support planned for a future version.
@@ -293,7 +293,7 @@ Unknown/unsupported shaders → create a default white `StandardMaterial3D` + lo
 | `_Cutoff` | `alpha_scissor_threshold` | Alpha cutoff value |
 | `_Surface` (0/1) | `transparency` | 0 = opaque, 1 = alpha |
 | `_Cull` (0/1/2) | `cull_mode` | 0 = off, 1 = front, 2 = back |
-| `_MainTex_ST` | `uv1_scale` + `uv1_offset` | `{x, y}` = scale, `{z, w}` = offset |
+| `_BaseMap` tiling/offset | `uv1_scale` + `uv1_offset` | Read from `m_TexEnvs._BaseMap.m_Scale` and `m_Offset`. `{x, y}` = scale, `{x, y}` = offset |
 
 ### Property Mapping: Legacy Standard → StandardMaterial3D
 
@@ -564,7 +564,7 @@ renderer/rendering_method="forward_plus"
 | | [INFO]  Found 142 assets (34 tex, 12 fbx, ...)  ||
 | | [INFO]  Building GUID table...                   ||
 | | [INFO]  Converting textures... (34/34)           ||
-| | [INFO]  Transcoded brick.psd → brick.png         ||
+| | [WARN]  brick.psd copied as-is (unsupported fmt) ||
 | | [WARN]  Unknown shader "Custom/Water" on         ||
 | |         material WaterSurface.mat → default mat  ||
 | | [INFO]  Converting scene: MainLevel.unity        ||
@@ -654,7 +654,7 @@ unity2godot/
 │   │   ├── package_extractor.h/.cpp # .unitypackage tar.gz extraction (miniz + custom tar reader)
 │   │   ├── guid_table.h/.cpp       # GUID → path resolution table
 │   │   ├── unity_yaml_parser.h/.cpp # Custom Unity YAML parser
-│   │   ├── texture_converter.h/.cpp # Texture copy/transcode + .import generation
+│   │   ├── texture_converter.h/.cpp # Texture copy + unsupported format warnings
 │   │   ├── material_converter.h/.cpp# Unity material → .tres conversion
 │   │   ├── scene_converter.h/.cpp  # Unity scene → .tscn conversion
 │   │   ├── prefab_converter.h/.cpp # Unity prefab → .tscn conversion
@@ -670,7 +670,7 @@ unity2godot/
     ├── imgui/                      # Dear ImGui
     ├── glfw/                       # GLFW windowing
     ├── miniz/                      # gzip/deflate
-    └── nfd/                        # nativefiledialog-extended
+    └── nfd-extended/                # nativefiledialog-extended
 ```
 
 ---

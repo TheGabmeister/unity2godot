@@ -21,7 +21,7 @@ add_subdirectory(thirdparty/miniz)
 # --- nativefiledialog-extended ---
 set(NFD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(NFD_INSTALL OFF CACHE BOOL "" FORCE)
-add_subdirectory(thirdparty/nativefiledialog-extended)
+add_subdirectory(thirdparty/nfd-extended)
 
 # --- Dear ImGui (no CMakeLists.txt, build manually) ---
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/imgui)
