@@ -7,5 +7,4 @@
 [node name="monkey" type="Node3D"]
 
 [node name="monkey" parent="." instance=ExtResource("1")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.17881, 0, -1.21419)
 surface_material_override/0 = ExtResource("2")
