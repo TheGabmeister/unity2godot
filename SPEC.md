@@ -224,6 +224,15 @@ Referencing individual meshes inside a Godot-imported FBX requires knowing the i
 
 ## 6. Material Conversion
 
+### Output Naming
+
+Unity `.mat` files are converted to Godot `.tres` files using the original material filename with the extension changed. The original folder structure is preserved (via the `Assets/` prefix stripping rule in section 9), which naturally avoids name collisions between materials with the same name in different folders:
+
+```
+Assets/Environment/Materials/Glass.mat  →  Environment/Materials/Glass.tres
+Assets/Characters/Materials/Glass.mat   →  Characters/Materials/Glass.tres
+```
+
 ### Shader Scope
 
 Three shader families are supported:
@@ -293,6 +302,18 @@ normal_texture = ExtResource("2")
 ### Unity Scene → Godot .tscn
 
 Each `.unity` scene file is converted to a `.tscn` file.
+
+### Duplicate Node Names
+
+Unity allows sibling GameObjects with identical names. Godot does not — sibling node names must be unique. When building the Godot node tree, track sibling names at each hierarchy level. If a name already exists, append a numeric suffix:
+
+```
+Chair  →  Chair
+Chair  →  Chair_2
+Chair  →  Chair_3
+```
+
+Note: if a renamed node is the target of a prefab override (referenced by its original Unity name), the override may not resolve correctly. This is logged as a warning.
 
 ### Process
 
