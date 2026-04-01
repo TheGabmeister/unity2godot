@@ -87,28 +87,24 @@ void ConverterUI::render() {
     float logHeight = converter_.isDone()
         ? ImGui::GetContentRegionAvail().y * 0.6f
         : ImGui::GetContentRegionAvail().y;
-    ImGui::BeginChild("LogScroll", ImVec2(0, logHeight), ImGuiChildFlags_Borders);
-
     auto entries = converter_.log().entries();
+    std::string logText;
     for (auto& e : entries) {
-        ImVec4 color;
         const char* prefix;
         switch (e.level) {
-            case LogLevel::Info:  color = ImVec4(1, 1, 1, 1);          prefix = "[INFO]  "; break;
-            case LogLevel::Warn:  color = ImVec4(1, 1, 0.2f, 1);      prefix = "[WARN]  "; break;
-            case LogLevel::Error: color = ImVec4(1, 0.3f, 0.3f, 1);   prefix = "[ERROR] "; break;
-            case LogLevel::Fatal: color = ImVec4(1, 0, 0, 1);         prefix = "[FATAL] "; break;
-            default:              color = ImVec4(1, 1, 1, 1);          prefix = "[INFO]  "; break;
+            case LogLevel::Info:  prefix = "[INFO]  "; break;
+            case LogLevel::Warn:  prefix = "[WARN]  "; break;
+            case LogLevel::Error: prefix = "[ERROR] "; break;
+            case LogLevel::Fatal: prefix = "[FATAL] "; break;
+            default:              prefix = "[INFO]  "; break;
         }
-        ImGui::PushStyleColor(ImGuiCol_Text, color);
-        ImGui::TextWrapped("%s%s", prefix, e.message.c_str());
-        ImGui::PopStyleColor();
+        logText += prefix;
+        logText += e.message;
+        logText += '\n';
     }
-
-    if (autoScroll_ && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 10)
-        ImGui::SetScrollHereY(1.0f);
-
-    ImGui::EndChild();
+    ImGui::InputTextMultiline("##log", const_cast<char*>(logText.c_str()),
+        logText.size() + 1, ImVec2(-1, logHeight),
+        ImGuiInputTextFlags_ReadOnly);
 
     // ---- Skip report (shown after conversion) ----
     if (converter_.isDone()) {
