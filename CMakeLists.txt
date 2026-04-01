@@ -40,7 +40,23 @@ target_include_directories(imgui PUBLIC
 target_link_libraries(imgui PUBLIC glfw)
 
 # --- Main executable ---
-add_executable(unity2godot src/main.cpp)
+add_executable(unity2godot
+    src/main.cpp
+    src/gui/app_window.cpp
+    src/gui/converter_ui.cpp
+    src/converter/converter.cpp
+    src/converter/package_extractor.cpp
+    src/converter/guid_table.cpp
+    src/converter/unity_yaml_parser.cpp
+    src/converter/texture_converter.cpp
+    src/converter/material_converter.cpp
+    src/converter/light_converter.cpp
+    src/converter/camera_converter.cpp
+    src/converter/scene_converter.cpp
+    src/converter/prefab_converter.cpp
+    src/converter/project_writer.cpp
+)
+target_include_directories(unity2godot PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(unity2godot PRIVATE imgui ufbx miniz nfd)
 
 # OpenGL
