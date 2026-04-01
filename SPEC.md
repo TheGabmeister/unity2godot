@@ -94,6 +94,12 @@ A cross-platform desktop tool that converts a `.unitypackage` file into a ready-
    - Import settings (texture settings, FBX settings, etc.)
 6. Temp directory is deleted after conversion completes (or on cancellation/error)
 
+### Edge Cases
+
+- **Prefab-only packages:** Some `.unitypackage` files contain only prefabs, textures, and models with no scenes. The converter handles this gracefully — all assets are converted normally, no `.tscn` scene files are produced, and `project.godot` is still generated. This is a valid output.
+- **Missing `asset` data:** Some entries in a `.unitypackage` have a `pathname` and `asset.meta` but no `asset` file (e.g., folder entries, or assets excluded during export). These entries are added to the GUID table (for path resolution) but skipped during conversion with no warning — this is normal.
+- **Path separators:** The `pathname` file may contain forward slashes or backslashes depending on the OS that created the package. All paths are normalized to forward slashes during extraction.
+
 ---
 
 ## 2. GUID Resolution
@@ -347,6 +353,18 @@ godot_rotation.w =  unity_rotation.w
 
 Scale is copied as-is (scale is handedness-independent).
 
+### Transform3D Serialization
+
+Godot's `Transform3D` is a 3x4 matrix: 3x3 basis (rotation + scale) followed by the origin (position). Unity stores transforms as separate position (Vector3), rotation (Quaternion), and scale (Vector3). The conversion is:
+
+1. Convert the quaternion to a 3x3 rotation matrix (basis)
+2. Multiply basis columns by the scale components
+3. Write as `Transform3D(bx.x, by.x, bz.x, bx.y, by.y, bz.y, bx.z, by.z, bz.z, ox, oy, oz)`
+
+Where `bx/by/bz` are the basis column vectors and `ox/oy/oz` is the origin.
+
+**Identity transform omission:** Godot omits the `transform` property when it equals the identity (`Transform3D(1,0,0, 0,1,0, 0,0,1, 0,0,0)`). The converter should do the same — only write the `transform` property when it differs from identity. This keeps `.tscn` files clean.
+
 ### Node Type Mapping
 
 | Unity Component | Godot Node | Property Mapping |
@@ -392,7 +410,6 @@ Scale is copied as-is (scale is handedness-independent).
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 5, 0, -3)
 
 [node name="GroupNode" type="Node3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
 
 [node name="Sun" type="DirectionalLight3D" parent="."]
 light_color = Color(1, 0.95, 0.85, 1)
@@ -473,6 +490,10 @@ Assets/Models/building.fbx  →  Models/building.fbx
 Assets/Textures/brick.png   →  Textures/brick.png
 Assets/Scenes/Main.unity    →  Scenes/Main.tscn
 ```
+
+### Special Characters in Names
+
+Unity allows spaces, parentheses, unicode, and other special characters in file and folder names. These are preserved as-is in the output — Godot supports them. When writing references in `.tscn`/`.tres` files, paths containing special characters must be quoted with double quotes (e.g., `path="res://Models/Old House (1)/building.fbx"`).
 
 ### project.godot
 
